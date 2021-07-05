@@ -16,7 +16,50 @@ class MVVM {
  */
 class Observer {
   constructor(data) {
+    this.data = data;
+    this.observe(this.data);
+  }
+  observe(obj) {
+    // 劫持的目标应该是对象
+    if(!obj || typeof obj !== 'object') {
+      return;
+    }
+    Object.keys(obj).forEach(key => {
+      this.dataHijacking(obj, key, obj[key]);
+      // 如果是对象 深度劫持
+      this.observe(obj[key]);
+    })
+  }
   
+  /**
+   *
+   * @param obj 对象
+   * @param key 键
+   * @param value 值
+   */
+  dataHijacking(obj, key, value) {
+    let that = this;
+    // 对于每个被劫持的key，都应该收集依赖
+    let dep = new Dep();
+    Object.defineProperty(obj, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        Dep.target && dep.add(Dep.target);
+        return value;
+      },
+      set(val) {
+        if(val === value) {
+          return;
+        }
+        // 如果设置的是对象继续劫持
+        that.observe(val);
+        value = val;
+        // dep 通知所有人 数据改变了
+        dep.notify();
+      }
+    })
+    
   }
   
 }
@@ -147,7 +190,13 @@ const CompileUtil = {
       // 直接替换
       value = this.getVal(expr, vm);
     }
-    // TODO 这里应该有个 Watcher 的回调
+    // 如果是 {{name}} 这种的表达式，还需要提取出 name
+    expr = expr.replace(/{{(\w+)}}/g, (matched, key) => {
+      return key;
+    })
+    new Watcher(vm, expr, (newValue) => {
+      updateDOM && updateDOM(node, newValue);
+    })
     
     updateDOM && updateDOM(node, value);
   },
@@ -172,12 +221,30 @@ const CompileUtil = {
     return expr.reduce((pre, k) => pre[k], vm.$data);
   },
   
+  setVal(expr, vm, newVal) {
+    expr = expr.split('.');
+    expr.reduce((pre, key, index) => {
+      if(expr.length - 1 === index) {
+        pre[key] = newVal;
+      }
+      return pre[key];
+    }, vm.$data);
+  },
+  
   model({node, expr, vm}) {
     let updateDOM = this.updater['updateInputFn'];
     // v-model="name";
     let value = this.getVal(expr, vm);
-    // TODO Watcher的回调
-    
+    // Watcher的回调
+    new Watcher(vm, expr, (newValue) => {
+      updateDOM && updateDOM(node, newValue);
+    })
+    // 对 node 设置监听程序
+    node.addEventListener('input', (e) => {
+      // 将对象数据和视图绑定起来
+      let newValue = e.target.value;
+      this.setVal(expr, vm, newValue);
+    })
     updateDOM && updateDOM(node, value);
   },
   
@@ -188,5 +255,62 @@ const CompileUtil = {
     updateInputFn(node, value) {
       node.value = value;
     }
+  }
+}
+
+
+/**
+ * 观察模板上的每个变量
+ */
+class Watcher {
+  constructor(vm, expr, callback) {
+    this.vm = vm;
+    this.expr = expr;
+    this.cb = callback;
+    // 先把旧值保存起来，并且因为读取了旧值，就运行了 get 函数搜集依赖
+    this.value = this.get(this.vm, this.expr);
+  }
+  
+  get(vm, expr) {
+    // 注册当前 Watcher
+    Dep.target = this;
+    // 调用 对象属性上的 get 方法搜集依赖
+    let value = this.getVal(vm, expr);
+    Dep.target = null;
+    // 然后移除
+    return value;
+  }
+  
+  getVal(vm, expr) {
+    // 用老方法获取对象的深度属性
+    expr = expr.split('.');
+    return expr.reduce((pre, key) => pre[key], vm.$data);
+  }
+  
+  // 对外暴露的方法，如果数据发生改变，就用这个方法更新
+  update() {
+    let newValue = this.getVal(this.vm, this.expr);
+    let oldValue = this.value;
+    if(newValue === oldValue) {
+      return;
+    }
+    this.value = newValue;
+    // 在Compile中注册的回调
+    this.cb(newValue);
+  }
+}
+
+class Dep {
+  static target = null;
+  constructor() {
+    // 订阅列表
+    this.sub = [];
+  }
+  add(watcher) {
+    this.sub.push(watcher);
+  }
+  
+  notify() {
+    this.sub.forEach(watcher => watcher.update()) // 通知所有人数据变动了
   }
 }
